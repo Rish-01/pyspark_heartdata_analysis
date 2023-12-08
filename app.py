@@ -1,10 +1,13 @@
 import streamlit as st
 from pyspark.sql import SparkSession
 from pyspark.ml.feature import VectorAssembler
+from pyspark.ml import PipelineModel
 from pyspark.ml.classification import LogisticRegression
 from pyspark.ml.classification import RandomForestClassifier
 from pyspark.ml.evaluation import BinaryClassificationEvaluator
 from pyspark.ml.evaluation import MulticlassClassificationEvaluator
+from pyspark.ml.classification import RandomForestClassificationModel
+from pyspark.ml.classification import LogisticRegressionModel
 
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -15,14 +18,16 @@ import warnings
 warnings.filterwarnings("ignore")
 
 # Create a Spark session
-spark = SparkSession.builder.appName("LogisticRegressionExample").getOrCreate()
+# spark = SparkSession.builder.appName("LogisticRegressionExample").getOrCreate()
+
+spark = SparkSession.builder.appName("Heart_attack_analysis").getOrCreate()
 
 # Read the csv dataset
 file_location = "./heart.csv"
 df = spark.read.csv(file_location, header=True, inferSchema=True)
 
 # Page selection
-page = st.sidebar.selectbox("Select Page", ["Plots", "Metrics"])
+page = st.sidebar.selectbox("Select Page", ["Plots", "Predict", "Metrics"])
 
 if page == "Plots":
     st.title("Plots analysing Heart attack risk dataset")
@@ -408,6 +413,82 @@ if page == "Plots":
     st.pyplot(fig)
 
 
+# --------------------------------------------------Predict--------------------------------------------------
+
+#Try
+# Low Risk 43 Female 0 120 177 <120 0 120 yes 2.5 1 0 3 0
+# High Risk 63 Female 3 145 233 >120 0 150 no 2.3 0 0 1 1
+
+# Input form
+if page == "Predict":
+    st.sidebar.header("Input Features")
+    age = st.sidebar.slider("Age", min_value=29, max_value=77, value=45)
+    sex = st.sidebar.selectbox("Sex", ["Male", "Female"])
+    cp = st.sidebar.slider("Chest Pain Type (cp)", min_value=0, max_value=3, value=1)
+    trtbps = st.sidebar.slider("Resting Blood Pressure (trtbps)", min_value=94, max_value=200, value=120)
+    chol = st.sidebar.slider("Cholesterol (chol)", min_value=126, max_value=564, value=200)
+    fbs = st.sidebar.selectbox("Fasting Blood Sugar (fbs)", ["<= 120 mg/dl", "> 120 mg/dl"])
+    restecg = st.sidebar.slider("Resting Electrocardiographic Results (restecg)", min_value=0, max_value=2, value=1)
+    thalachh = st.sidebar.slider("Maximum Heart Rate Achieved (thalachh)", min_value=71, max_value=202, value=150)
+    exng = st.sidebar.selectbox("Exercise Induced Angina (exng)", ["No", "Yes"])
+    oldpeak = st.sidebar.slider("Oldpeak", min_value=0.0, max_value=6.2, value=1.0)
+    slp = st.sidebar.slider("Slope (slp)", min_value=0, max_value=2, value=1)
+    caa = st.sidebar.slider("Number of Major Vessels (caa)", min_value=0, max_value=3, value=1)
+    thall = st.sidebar.slider("Thalassemia (thall)", min_value=0, max_value=3, value=2)
+
+    # Convert categorical input to numerical
+    sex_numeric = 0 if sex == "Male" else 1
+    fbs_numeric = 0 if fbs == "<= 120 mg/dl" else 1
+    exng_numeric = 0 if exng == "No" else 1
+     
+	# Create a PySpark DataFrame from the input
+    categorical_cols = ['sex', 'exng', 'caa', 'cp', 'fbs', 'restecg', 'slp', 'thall']
+    continuous_cols = ["age", "trtbps", "chol", "thalachh", "oldpeak"]
+    target_col = ["output"]
+
+    # Combine multiple features into one vector
+    input_data = [(age, sex_numeric, cp, trtbps, chol, fbs_numeric, restecg, thalachh, exng_numeric, oldpeak, slp, caa, thall)]
+    columns = ["age", "sex", "cp", "trtbps", "chol", "fbs", "restecg", "thalachh", "exng", "oldpeak", "slp", "caa", "thall"]
+    input_df = spark.createDataFrame(input_data, columns)
+    features_uncombined = categorical_cols + continuous_cols
+    assembler = VectorAssembler(inputCols=features_uncombined, outputCol="features")
+    input_df = assembler.transform(input_df)
+    
+
+    # Function to make predictions and display result
+    def make_predictions(model, model_name):
+        # Make predictions using the PySpark model
+        predictions = model.transform(input_df)
+        
+        # Display the prediction result
+        result = predictions.select("prediction").collect()[0]["prediction"]
+        if result == 0:
+            output = "You have a low risk of Heart Attack"
+        else:
+            output = "You have a high risk of Heart Attack"
+
+        # Determine color based on the result
+        color = "green" if result == 0 else "red"
+        
+        # Display the prediction result with formatting
+        st.subheader(f"Prediction Result - {model_name}")
+        st.markdown(f'<p style="font-size:24px;color:{color}">{output}</p>', unsafe_allow_html=True)
+
+        # st.write(f"{model_name} Predicted Output:", output)
+
+    # Load the PySpark models
+    model1 = RandomForestClassificationModel.load("./saved_models/random_forest")
+    model2 = LogisticRegressionModel.load("./saved_models/logistic_regression")
+
+    # Predict button for Model 1
+    if st.button("Predict - Random Forest"):
+        make_predictions(model1, "Random Forest")
+
+    # Predict button for Model 2
+    if st.button("Predict - Logistic Regression"):
+        make_predictions(model2, "Logistic Regression")
+
+
 #---------------------------------------------Model----------------------------------------------------------
 
 if page == "Metrics":
@@ -429,6 +510,8 @@ if page == "Metrics":
 
     # Train the model
     model = rf.fit(train_data)
+    # model.save("./saved_models/random_forest")
+
 
     # Make predictions on the test data
     predictions_rf = model.transform(test_data)
@@ -461,9 +544,12 @@ if page == "Metrics":
 
     # Train the model
     model = lr.fit(train_data)
+    # model.save("./saved_models/logistic_regression")
+
 
     # Make predictions on the test data
     predictions_lr = model.transform(test_data)
+
 
     # Evaluate the model
     evaluator = BinaryClassificationEvaluator(rawPredictionCol="rawPrediction", labelCol="output", metricName="areaUnderROC")
@@ -485,3 +571,4 @@ if page == "Metrics":
     st.write("Precision:", precision)
     st.write("Recall:", recall)
     st.write("F1 Score:", f1)
+
